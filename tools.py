@@ -1,52 +1,78 @@
-from langchain.tools import tool
-import requests
-from bs4 import BeautifulSoup
-from tavily import TavilyClient
-import trafilatura
 import os
+
+import requests
+import trafilatura
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from langchain.tools import tool
+from tavily import TavilyClient
+
 load_dotenv()
 
-tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+if not TAVILY_API_KEY:
+    raise ValueError(
+        "TAVILY_API_KEY is missing. Add it to your .env file or deployment secrets."
+    )
+
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
 
 HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    ),
     "Accept-Language": "en-US,en;q=0.9",
 }
 
 
 @tool
 def web_search(query: str) -> str:
-    """
-    Search the web for recent reliable information on a topic. Return Titles, URLs and snippets.
-    """
-    # More results gives the pipeline more candidate domains to choose from
-    results = tavily_client.search(query=query, max_results=8)
-    out = []
-    for r in results["results"]:
-        out.append(f"Title: {r['title']}\nURL: {r['url']}\nSnippet: {r['content'][:300]}\n")
-    return "\n-------\n".join(out)
+    """Search the web and return titles, URLs and concise snippets."""
+    results = tavily_client.search(query=query, max_results=5)
+    output = []
+    for result in results.get("results", []):
+        output.append(
+            f"Title: {result.get('title', 'Untitled')}\n"
+            f"URL: {result.get('url', '')}\n"
+            f"Snippet: {result.get('content', '')[:180]}"
+        )
+    return "\n\n-----\n\n".join(output) or "No search results returned."
 
 
 @tool
 def scrape_url(url: str) -> str:
-    """Scrape and return the main readable article text from a given URL for deeper reading."""
+    """Download a webpage and extract its main readable text."""
     try:
-        resp = requests.get(url, timeout=10, headers=HEADERS)
-        resp.raise_for_status()
+        response = requests.get(url, timeout=12, headers=HEADERS)
+        response.raise_for_status()
 
-        # 1) Best option: extract only the main article body
-        text = trafilatura.extract(resp.text, include_comments=False, include_tables=False)
-        if text and len(text.strip()) > 200:
-            return text[:4000]
+        extracted = trafilatura.extract(
+            response.text,
+            include_comments=False,
+            include_tables=False,
+        )
+        if extracted and len(extracted.strip()) > 200:
+            return extracted[:3000]
 
-        # 2) Fallback: BeautifulSoup, paragraphs only, with page chrome removed
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
+        soup = BeautifulSoup(response.text, "html.parser")
+        for tag in soup([
+            "script", "style", "nav", "footer", "header",
+            "aside", "form", "noscript",
+        ]):
             tag.decompose()
-        paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+
+        paragraphs = [
+            paragraph.get_text(" ", strip=True)
+            for paragraph in soup.find_all("p")
+        ]
         text = " ".join(p for p in paragraphs if len(p) > 40)
-        return text[:4000]
-    except Exception as e:
-        return f"Could not scrape URL: {str(e)}"
+        if text.strip():
+            return text[:3000]
+
+        return "Could not scrape URL: no readable page content found."
+    except requests.RequestException as exc:
+        return f"Could not scrape URL: {exc}"
+    except Exception as exc:
+        return f"Could not scrape URL: {exc}"
