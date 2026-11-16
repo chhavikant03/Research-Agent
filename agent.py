@@ -1,100 +1,113 @@
+import os
 
+from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from tools import web_search, scrape_url
-from dotenv import load_dotenv
-import os
+
+from tools import web_search
 
 load_dotenv()
 
-# Groq LLM
+# Shared Groq model for the Search Agent, Writer, Critic and Revision chain.
 llm = ChatGroq(
     model="openai/gpt-oss-120b",
     api_key=os.getenv("GROQ_API_KEY"),
     temperature=0,
+    max_tokens=1400,
     max_retries=2,
+    timeout=60,
 )
 
 
 def build_search_agent():
+    """Create the web-search agent."""
     return create_agent(model=llm, tools=[web_search])
 
 
-def build_reader_agent():
-    return create_agent(model=llm, tools=[scrape_url])
-
-
 writer_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are an expert research writer. Write clear, structured and insightful reports. "
-               "Only use facts supported by the numbered sources provided."),
-    ("human", """Write a detailed research report on the topic below.
+    (
+        "system",
+        "You are an expert research writer. Write clear, structured reports. "
+        "Use only information supported by the supplied source material. "
+        "If evidence is insufficient, say so rather than inventing facts."
+    ),
+    (
+        "human",
+        """Prepare a research report on this topic:
 
 Topic: {topic}
 
-Numbered Sources:
+Source material:
 {sources}
 
-Search Overview:
+Search overview:
 {search_overview}
 
-Rules:
-- Cite sources inline using [1], [2], etc. after every factual claim.
-- Do not invent sources or facts that are not in the material above.
-
-Structure the report as:
-- Introduction
-- Key Findings (minimum 3 well-explained points, each with citations)
-- Conclusion
-- References (list each source as: [n] URL)
-
-Be detailed, factual and professional."""),
+Requirements:
+- Cite factual claims inline using [1], [2], etc.
+- Do not invent facts, statistics, sources, or URLs.
+- Keep the report focused and avoid repetition.
+- Include Introduction, Key Findings (at least 3 points), Conclusion,
+  and References.
+- In References, list the supplied source URLs with matching numbers.
+- Be informative but concise."""
+    ),
 ])
 
 writer_chain = writer_prompt | llm | StrOutputParser()
 
 
 revise_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are an expert research writer revising a report based on reviewer feedback."),
-    ("human", """Topic: {topic}
+    (
+        "system",
+        "You are an expert research writer revising a report using reviewer "
+        "feedback. Stay strictly within the supplied evidence."
+    ),
+    (
+        "human",
+        """Topic: {topic}
 
-Numbered Sources:
+Source material:
 {sources}
 
-Previous Report:
+Previous report:
 {report}
 
-Critic Feedback:
+Critic feedback:
 {feedback}
 
-Rewrite the report so it fixes every point under 'Areas to Improve'.
-Keep inline citations [n] and the same structure
-(Introduction, Key Findings, Conclusion, References).
-Do not add facts that are not in the sources."""),
+Address the important issues in the feedback. Keep the sections Introduction,
+Key Findings, Conclusion, and References. Preserve valid inline citations.
+Do not add unsupported facts. Keep the revised report concise."""
+    ),
 ])
 
 revise_chain = revise_prompt | llm | StrOutputParser()
 
 
 critic_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a sharp, fair and constructive research critic. "
-               "Judge the report against the provided sources."),
-    ("human", """Evaluate the research report below using the source material.
+    (
+        "system",
+        "You are a fair and constructive research reviewer. Evaluate the report "
+        "against the supplied source material. Do not claim to verify anything "
+        "that is not supported by the supplied text."
+    ),
+    (
+        "human",
+        """Evaluate this research report against the source material.
 
-Sources:
+Source material:
 {sources}
 
 Report:
 {report}
 
-Score each criterion from 1 to 10 (5 = acceptable, 7 = good, 9 = excellent):
-- Accuracy: are claims supported by the sources?
-- Citation use: are [n] citations present and correct?
-- Depth: are the findings explained, not just listed?
-- Structure and clarity
+Assess accuracy, citation use, depth, structure and clarity.
+Give one overall score out of 10.
 
-Respond in this exact format:
+Respond in exactly this format:
 
 Score: X/10
 
@@ -107,7 +120,8 @@ Areas to Improve:
 - ...
 
 One line verdict:
-..."""),
+..."""
+    ),
 ])
 
 critic_chain = critic_prompt | llm | StrOutputParser()
